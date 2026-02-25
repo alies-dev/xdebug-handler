@@ -299,19 +299,28 @@ class XdebugHandler
 
         $process = proc_open($cmd, [], $pipes);
         if (is_resource($process)) {
-            // Use proc_get_status to reliably detect signal deaths, because
-            // proc_close returns the raw signal number on non-Windows, making
-            // it indistinguishable from a normal exit code (php/php-src#21292).
+            // Poll proc_get_status until the process exits, so we can
+            // reliably read the signaled/termsig fields. We can't use
+            // proc_close alone because it returns the raw signal number
+            // on non-Windows, indistinguishable from a normal exit code.
+            // See https://github.com/php/php-src/issues/21292
             $status = proc_get_status($process);
-            $exitCode = proc_close($process);
+            while ($status['running']) {
+                usleep(100_000);
+                $status = proc_get_status($process);
+            }
 
-            if (!$status['running'] && $status['signaled']) {
+            if ($status['signaled']) {
                 $exitCode = 128 + $status['termsig'];
                 $this->notify(Status::ERROR, sprintf(
                     'Restarted process was killed by signal %d',
                     $status['termsig']
                 ));
+            } else {
+                $exitCode = $status['exitcode'];
             }
+
+            proc_close($process);
         }
 
         if (!isset($exitCode)) {
