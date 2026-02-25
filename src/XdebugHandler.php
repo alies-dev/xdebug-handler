@@ -299,7 +299,19 @@ class XdebugHandler
 
         $process = proc_open($cmd, [], $pipes);
         if (is_resource($process)) {
+            // Use proc_get_status to reliably detect signal deaths, because
+            // proc_close returns the raw signal number on non-Windows, making
+            // it indistinguishable from a normal exit code (php/php-src#21292).
+            $status = proc_get_status($process);
             $exitCode = proc_close($process);
+
+            if (!$status['running'] && $status['signaled']) {
+                $exitCode = 128 + $status['termsig'];
+                $this->notify(Status::ERROR, sprintf(
+                    'Restarted process was killed by signal %d',
+                    $status['termsig']
+                ));
+            }
         }
 
         if (!isset($exitCode)) {
@@ -316,34 +328,8 @@ class XdebugHandler
             @unlink((string) $this->tmpIni);
         }
 
-        // On non-Windows, proc_close returns the raw signal number when the
-        // child process is killed by a signal, making it indistinguishable
-        // from a normal exit code. Detect common crash signals and normalize
-        // the exit code to the Unix convention of 128 + signal number.
-        if (!defined('PHP_WINDOWS_VERSION_BUILD') && isset(self::CRASH_SIGNALS[$exitCode])) {
-            $signal = self::CRASH_SIGNALS[$exitCode];
-            $this->notify(Status::ERROR, sprintf(
-                'Restarted process crashed with %s (signal %d)',
-                $signal,
-                $exitCode
-            ));
-            $exitCode = 128 + $exitCode;
-        }
-
         exit($exitCode);
     }
-
-    /**
-     * Signal names for common crash signals returned by proc_close()
-     *
-     * @var array<int, string>
-     */
-    private const CRASH_SIGNALS = [
-        4 => 'SIGILL',
-        6 => 'SIGABRT',
-        8 => 'SIGFPE',
-        11 => 'SIGSEGV',
-    ];
 
     /**
      * Returns the command line array if everything was written for the restart
